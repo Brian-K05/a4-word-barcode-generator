@@ -1,0 +1,8 @@
+# Optional: use this for one-click deploy on Render
+# Or use the dashboard: New → Web Service → connect repo
+services:
+  - type: web
+    name: a4-word-barcode-generator
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: gunicorn app:app
