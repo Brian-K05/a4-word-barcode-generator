@@ -84,13 +84,36 @@ def _anchor_xml(pos_x_emu, pos_y_emu, cx_emu, cy_emu, rId):
     )
 
 
+# Barcode image options used for both Word and standalone image (must match)
+BARCODE_OPTIONS = {'write_text': False}
+
+
+def generate_barcode_image_bytes(barcode_data):
+    """
+    Generate Code 128 barcode image as PNG bytes.
+    Use this so the same image can be embedded in the Word doc and saved as a file.
+    """
+    try:
+        import barcode
+        from barcode.writer import ImageWriter
+    except ImportError:
+        raise ImportError(
+            "Install python-barcode and Pillow: pip install python-barcode Pillow"
+        )
+    code = barcode.get('code128', str(barcode_data), writer=ImageWriter())
+    buffer = io.BytesIO()
+    code.write(buffer, options=BARCODE_OPTIONS)
+    buffer.seek(0)
+    return buffer.getvalue()
+
+
 def create_document_with_barcode(barcode_data, output_path, barcode_image_path=None):
     """
     Create an A4 Word document with a barcode image in the footer.
 
     :param barcode_data: Text to encode in the barcode (e.g. "123456789").
     :param output_path: Path for the output .docx file or file-like object (e.g. BytesIO).
-    :param barcode_image_path: Optional path to an existing barcode image file.
+    :param barcode_image_path: Optional path to an existing barcode image file (same as standalone image).
     """
     doc = Document()
 
@@ -102,18 +125,7 @@ def create_document_with_barcode(barcode_data, output_path, barcode_image_path=N
         with open(barcode_image_path, 'rb') as f:
             image_stream = io.BytesIO(f.read())
     else:
-        try:
-            import barcode
-            from barcode.writer import ImageWriter
-            code = barcode.get('code128', str(barcode_data), writer=ImageWriter())
-            buffer = io.BytesIO()
-            code.write(buffer, options={'write_text': False})
-            buffer.seek(0)
-            image_stream = buffer
-        except ImportError:
-            raise ImportError(
-                "Install python-barcode and Pillow: pip install python-barcode Pillow"
-            )
+        image_stream = io.BytesIO(generate_barcode_image_bytes(barcode_data))
 
     footer = section.footer
     if not footer.paragraphs:

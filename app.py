@@ -1,18 +1,30 @@
 """
-Web app: enter barcode value → Generate → Download Word file (Code 128, A4, barcode in footer).
+Web app: enter barcode value → Generate → Download ZIP with Word file + barcode image (Code 128, A4).
 """
 import io
 import re
+import zipfile
+import tempfile
+import os
 from flask import Flask, request, render_template_string, send_file
-from barcode_footer import generate_word_bytes
+from barcode_footer import generate_word_bytes, generate_barcode_image_bytes, create_document_with_barcode
 
 app = Flask(__name__)
 
 
+def safe_basename(value):
+    """Safe filename base from barcode value (no extension)."""
+    return "barcode_" + re.sub(r'[^\w\-]', '_', str(value))[:50]
+
+
 def safe_filename(value):
-    """Safe filename from barcode value."""
-    safe = re.sub(r'[^\w\-]', '_', str(value))[:50]
-    return f"barcode_{safe}.docx"
+    """Safe filename for Word file."""
+    return safe_basename(value) + ".docx"
+
+
+def safe_image_filename(value):
+    """Safe filename for barcode image."""
+    return safe_basename(value) + ".png"
 
 
 HTML = """
@@ -141,12 +153,12 @@ HTML = """
       <div class="card-header">
         <div class="icon">📄</div>
         <h1>Word Barcode Generator</h1>
-        <p class="sub">Code 128 · A4 · Barcode in footer</p>
+        <p class="sub">Code 128 · A4 · Word + barcode image (ZIP)</p>
       </div>
       <form method="post" action="/generate" id="f">
         <label for="value">Barcode value</label>
         <input type="text" id="value" name="barcode_value" placeholder="e.g. 123456789" required autofocus>
-        <button type="submit" class="btn" id="btn">Generate & Download</button>
+        <button type="submit" class="btn" id="btn">Generate & Download (Word + Barcode image)</button>
       </form>
       {% if error %}<p class="error">{{ error }}</p>{% endif %}
     </div>
@@ -174,14 +186,31 @@ def generate():
     if not value:
         return render_template_string(HTML, error="Please enter a barcode value."), 400
     try:
-        docx_bytes = generate_word_bytes(value)
+        # One barcode image used for both Word and standalone file (guarantees they match)
+        barcode_image_bytes = generate_barcode_image_bytes(value)
+        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+            tmp.write(barcode_image_bytes)
+            tmp_path = tmp.name
+        try:
+            docx_buffer = io.BytesIO()
+            create_document_with_barcode(value, docx_buffer, barcode_image_path=tmp_path)
+            docx_bytes = docx_buffer.getvalue()
+        finally:
+            os.unlink(tmp_path)
+
+        # ZIP with Word doc + barcode image
+        zip_buffer = io.BytesIO()
+        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(safe_filename(value), docx_bytes)
+            zf.writestr(safe_image_filename(value), barcode_image_bytes)
+        zip_buffer.seek(0)
     except Exception as e:
         return render_template_string(HTML, error=str(e)), 500
     return send_file(
-        io.BytesIO(docx_bytes),
+        zip_buffer,
         as_attachment=True,
-        download_name=safe_filename(value),
-        mimetype="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        download_name=safe_basename(value) + ".zip",
+        mimetype="application/zip",
     )
 
 
