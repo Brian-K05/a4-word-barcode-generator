@@ -1,5 +1,6 @@
 """
-Web app: enter barcode value → Generate → Download ZIP with Word file + barcode image (Code 128, A4).
+Web app: one or many barcodes → ZIP with Word + PNG per item (Code 128, A4).
+Each item uses a user-chosen folder/file name inside the ZIP.
 """
 import io
 import re
@@ -7,24 +8,69 @@ import zipfile
 import tempfile
 import os
 from flask import Flask, request, render_template_string, send_file
-from barcode_footer import generate_word_bytes, generate_barcode_image_bytes, create_document_with_barcode
+from barcode_footer import generate_barcode_image_bytes, create_document_with_barcode
 
 app = Flask(__name__)
 
-
-def safe_basename(value):
-    """Safe filename base from barcode value (no extension)."""
-    return "barcode_" + re.sub(r'[^\w\-]', '_', str(value))[:50]
+MAX_ITEMS = 50
 
 
-def safe_filename(value):
-    """Safe filename for Word file."""
-    return safe_basename(value) + ".docx"
+def sanitize_label(name):
+    """
+    Safe folder / basename from user input (no extension).
+    Returns None if nothing usable remains.
+    """
+    s = re.sub(r"[^\w\-.]", "_", str(name).strip())
+    s = s.strip("._")
+    if not s:
+        return None
+    return s[:80]
 
 
-def safe_image_filename(value):
-    """Safe filename for barcode image."""
-    return safe_basename(value) + ".png"
+def build_one_pair_zip(sanitized_label, barcode_value):
+    """Single item: ZIP with one folder containing .docx + .png."""
+    barcode_image_bytes = generate_barcode_image_bytes(barcode_value)
+    with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+        tmp.write(barcode_image_bytes)
+        tmp_path = tmp.name
+    try:
+        docx_buffer = io.BytesIO()
+        create_document_with_barcode(barcode_value, docx_buffer, barcode_image_path=tmp_path)
+        docx_bytes = docx_buffer.getvalue()
+    finally:
+        os.unlink(tmp_path)
+
+    zip_buffer = io.BytesIO()
+    folder = sanitized_label
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr(f"{folder}/{folder}.docx", docx_bytes)
+        zf.writestr(f"{folder}/{folder}.png", barcode_image_bytes)
+    zip_buffer.seek(0)
+    return zip_buffer
+
+
+def build_multi_zip(pairs):
+    """pairs: list of (sanitized_label, barcode_value)."""
+    zip_buffer = io.BytesIO()
+    with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
+        for sanitized_label, barcode_value in pairs:
+            barcode_image_bytes = generate_barcode_image_bytes(barcode_value)
+            with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
+                tmp.write(barcode_image_bytes)
+                tmp_path = tmp.name
+            try:
+                docx_buffer = io.BytesIO()
+                create_document_with_barcode(
+                    barcode_value, docx_buffer, barcode_image_path=tmp_path
+                )
+                docx_bytes = docx_buffer.getvalue()
+            finally:
+                os.unlink(tmp_path)
+            folder = sanitized_label
+            zf.writestr(f"{folder}/{folder}.docx", docx_bytes)
+            zf.writestr(f"{folder}/{folder}.png", barcode_image_bytes)
+    zip_buffer.seek(0)
+    return zip_buffer
 
 
 HTML = """
@@ -52,7 +98,7 @@ HTML = """
     }
     .wrap {
       width: 100%;
-      max-width: 400px;
+      max-width: 560px;
     }
     .card {
       background: rgba(30, 41, 59, 0.8);
@@ -64,7 +110,7 @@ HTML = """
     }
     .card-header {
       text-align: center;
-      margin-bottom: 1.75rem;
+      margin-bottom: 1.5rem;
     }
     .icon {
       width: 48px;
@@ -89,24 +135,29 @@ HTML = """
       font-size: 0.9rem;
       font-weight: 500;
     }
-    form { margin-top: 1.5rem; }
+    .hint {
+      color: #64748b;
+      font-size: 0.8rem;
+      margin-top: 0.35rem;
+      line-height: 1.4;
+    }
+    form { margin-top: 1.25rem; }
     label {
       display: block;
-      font-size: 0.875rem;
+      font-size: 0.8rem;
       font-weight: 600;
       color: #cbd5e1;
-      margin-bottom: 0.5rem;
+      margin-bottom: 0.35rem;
     }
     input[type="text"] {
       width: 100%;
-      padding: 0.85rem 1rem;
-      font-size: 1rem;
+      padding: 0.65rem 0.85rem;
+      font-size: 0.95rem;
       font-family: inherit;
       color: #f8fafc;
       background: rgba(15, 23, 42, 0.6);
       border: 1px solid rgba(71, 85, 105, 0.6);
-      border-radius: 12px;
-      margin-bottom: 1.25rem;
+      border-radius: 10px;
       transition: border-color 0.2s, box-shadow 0.2s;
     }
     input[type="text"]::placeholder { color: #64748b; }
@@ -115,6 +166,57 @@ HTML = """
       border-color: #3b82f6;
       box-shadow: 0 0 0 3px rgba(59, 130, 246, 0.25);
     }
+    .row-block {
+      padding: 1rem;
+      margin-bottom: 1rem;
+      background: rgba(15, 23, 42, 0.45);
+      border-radius: 14px;
+      border: 1px solid rgba(71, 85, 105, 0.35);
+      position: relative;
+    }
+    .row-block .row-title {
+      font-size: 0.75rem;
+      font-weight: 700;
+      color: #94a3b8;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      margin-bottom: 0.75rem;
+    }
+    .field { margin-bottom: 0.75rem; }
+    .field:last-of-type { margin-bottom: 0; }
+    .row-actions {
+      display: flex;
+      justify-content: flex-end;
+      margin-top: 0.5rem;
+    }
+    .btn-remove {
+      padding: 0.35rem 0.65rem;
+      font-size: 0.8rem;
+      font-weight: 600;
+      font-family: inherit;
+      color: #f87171;
+      background: transparent;
+      border: 1px solid rgba(248, 113, 113, 0.35);
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .btn-remove:hover { background: rgba(248, 113, 113, 0.1); }
+    .btn-remove:disabled { opacity: 0.35; cursor: not-allowed; }
+    .btn-add {
+      width: 100%;
+      padding: 0.65rem 1rem;
+      font-size: 0.9rem;
+      font-weight: 600;
+      font-family: inherit;
+      color: #93c5fd;
+      background: rgba(59, 130, 246, 0.12);
+      border: 1px dashed rgba(59, 130, 246, 0.45);
+      border-radius: 12px;
+      cursor: pointer;
+      margin-bottom: 1rem;
+    }
+    .btn-add:hover { background: rgba(59, 130, 246, 0.2); }
+    .btn-add:disabled { opacity: 0.5; cursor: not-allowed; }
     .btn {
       width: 100%;
       padding: 0.9rem 1.25rem;
@@ -154,17 +256,73 @@ HTML = """
         <div class="icon">📄</div>
         <h1>Word Barcode Generator</h1>
         <p class="sub">Code 128 · A4 · Word + barcode image (ZIP)</p>
+        <p class="hint">Name each set (folder in the ZIP). Add rows for multiple barcodes. Each folder contains matching <code style="color:#94a3b8;">.docx</code> and <code style="color:#94a3b8;">.png</code>.</p>
       </div>
       <form method="post" action="/generate" id="f">
-        <label for="value">Barcode value</label>
-        <input type="text" id="value" name="barcode_value" placeholder="e.g. 123456789" required autofocus>
-        <button type="submit" class="btn" id="btn">Generate & Download (Word + Barcode image)</button>
+        <div id="rows"></div>
+        <button type="button" class="btn-add" id="addRow">+ Add another file</button>
+        <button type="submit" class="btn" id="btn">Generate &amp; download ZIP</button>
       </form>
       {% if error %}<p class="error">{{ error }}</p>{% endif %}
     </div>
     <p class="credit">Built by <strong>Brian Kyle L. Salor</strong></p>
   </div>
   <script>
+    var MAX = """ + str(MAX_ITEMS) + """;
+    var rowCount = 0;
+
+    function rowHtml(n) {
+      return (
+        '<div class="row-block" data-row="' + n + '">' +
+        '<div class="row-title">Set #' + n + '</div>' +
+        '<div class="field">' +
+        '<label>Folder &amp; file name <span style="font-weight:400;color:#64748b">(no extension)</span></label>' +
+        '<input type="text" name="file_label" required placeholder="e.g. L1_Invoice or SKU_Box12" maxlength="100">' +
+        '</div>' +
+        '<div class="field">' +
+        '<label>Barcode value</label>' +
+        '<input type="text" name="barcode_value" required placeholder="e.g. 123456789">' +
+        '</div>' +
+        '<div class="row-actions">' +
+        '<button type="button" class="btn-remove" data-remove>Remove</button>' +
+        '</div>' +
+        '</div>'
+      );
+    }
+
+    function refreshRemoveState() {
+      var blocks = document.querySelectorAll('.row-block');
+      var canRemove = blocks.length > 1;
+      blocks.forEach(function(b, i) {
+        var title = b.querySelector('.row-title');
+        if (title) { title.textContent = 'Set #' + (i + 1); }
+        var btn = b.querySelector('[data-remove]');
+        if (btn) { btn.disabled = !canRemove; }
+      });
+      document.getElementById('addRow').disabled = blocks.length >= MAX;
+    }
+
+    function addRow() {
+      if (rowCount >= MAX) return;
+      rowCount++;
+      var wrap = document.getElementById('rows');
+      var div = document.createElement('div');
+      div.innerHTML = rowHtml(rowCount);
+      wrap.appendChild(div.firstElementChild);
+      refreshRemoveState();
+    }
+
+    document.getElementById('rows').addEventListener('click', function(e) {
+      if (e.target.matches('[data-remove]') && !e.target.disabled) {
+        e.target.closest('.row-block').remove();
+        refreshRemoveState();
+      }
+    });
+
+    document.getElementById('addRow').addEventListener('click', addRow);
+
+    for (var i = 0; i < 1; i++) { addRow(); }
+
     document.getElementById('f').onsubmit = function() {
       document.getElementById('btn').disabled = true;
       document.getElementById('btn').textContent = 'Generating…';
@@ -180,36 +338,68 @@ def index():
     return render_template_string(HTML)
 
 
+def _parse_pairs_from_form():
+    """Return (pairs, error_message) where pairs is list of (sanitized_label, value) or None."""
+    labels = request.form.getlist("file_label")
+    values = request.form.getlist("barcode_value")
+    if len(labels) != len(values):
+        return None, "Form mismatch. Please refresh and try again."
+
+    raw_rows = []
+    for i, (raw_label, raw_val) in enumerate(zip(labels, values)):
+        label = (raw_label or "").strip()
+        value = (raw_val or "").strip()
+        if not label and not value:
+            continue
+        if not label:
+            return None, f"Set #{i + 1}: enter a folder and file name."
+        if not value:
+            return None, f"Set #{i + 1}: enter a barcode value."
+        safe = sanitize_label(label)
+        if not safe:
+            return None, f"Set #{i + 1}: use letters, numbers, dashes, or dots in the name."
+        raw_rows.append((safe, value, label))
+
+    if not raw_rows:
+        return None, "Add at least one set with a name and barcode value."
+
+    if len(raw_rows) > MAX_ITEMS:
+        return None, f"Maximum {MAX_ITEMS} sets per download."
+
+    seen = {}
+    pairs = []
+    for safe, value, original in raw_rows:
+        if safe in seen:
+            return (
+                None,
+                f"Duplicate name “{safe}” after cleaning (sets “{seen[safe]}” and “{original}”). "
+                "Use unique names.",
+            )
+        seen[safe] = original
+        pairs.append((safe, value))
+
+    return pairs, None
+
+
 @app.route("/generate", methods=["POST"])
 def generate():
-    value = (request.form.get("barcode_value") or "").strip()
-    if not value:
-        return render_template_string(HTML, error="Please enter a barcode value."), 400
+    pairs, err = _parse_pairs_from_form()
+    if err:
+        return render_template_string(HTML, error=err), 400
     try:
-        # One barcode image used for both Word and standalone file (guarantees they match)
-        barcode_image_bytes = generate_barcode_image_bytes(value)
-        with tempfile.NamedTemporaryFile(suffix=".png", delete=False) as tmp:
-            tmp.write(barcode_image_bytes)
-            tmp_path = tmp.name
-        try:
-            docx_buffer = io.BytesIO()
-            create_document_with_barcode(value, docx_buffer, barcode_image_path=tmp_path)
-            docx_bytes = docx_buffer.getvalue()
-        finally:
-            os.unlink(tmp_path)
-
-        # ZIP with Word doc + barcode image
-        zip_buffer = io.BytesIO()
-        with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(safe_filename(value), docx_bytes)
-            zf.writestr(safe_image_filename(value), barcode_image_bytes)
-        zip_buffer.seek(0)
+        if len(pairs) == 1:
+            label, value = pairs[0]
+            zip_buffer = build_one_pair_zip(label, value)
+            zip_name = f"{label}.zip"
+        else:
+            zip_buffer = build_multi_zip(pairs)
+            zip_name = "barcodes_batch.zip"
     except Exception as e:
         return render_template_string(HTML, error=str(e)), 500
     return send_file(
         zip_buffer,
         as_attachment=True,
-        download_name=safe_basename(value) + ".zip",
+        download_name=zip_name,
         mimetype="application/zip",
     )
 
