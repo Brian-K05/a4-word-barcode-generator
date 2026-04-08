@@ -85,7 +85,37 @@ def _anchor_xml(pos_x_emu, pos_y_emu, cx_emu, cy_emu, rId):
 
 
 # Barcode image options used for both Word and standalone image (must match)
-BARCODE_OPTIONS = {'write_text': False}
+# quiet_zone: default 6.5mm leaves large side margins; Code 128 needs ~10× module width
+# (default module_width 0.2mm → ~2.0mm minimum quiet zone each side).
+BARCODE_OPTIONS = {
+    'write_text': False,
+    'quiet_zone': 2.0,
+}
+
+
+def _trim_barcode_png(png_bytes, pad_px=2):
+    """
+    Crop PNG to the dark barcode area plus a small pad (removes leftover white).
+    Saves as RGB PNG for broader viewer compatibility.
+    """
+    from PIL import Image
+
+    img = Image.open(io.BytesIO(png_bytes))
+    gray = img.convert('L')
+    # Bars are dark; threshold to find content bbox
+    mask = gray.point(lambda p: 0 if p > 245 else 255, mode='1')
+    bbox = mask.getbbox()
+    if not bbox:
+        return png_bytes
+    left, upper, right, lower = bbox
+    left = max(0, left - pad_px)
+    upper = max(0, upper - pad_px)
+    right = min(img.width, right + pad_px)
+    lower = min(img.height, lower + pad_px)
+    rgb = img.convert('RGB').crop((left, upper, right, lower))
+    out = io.BytesIO()
+    rgb.save(out, format='PNG', optimize=True)
+    return out.getvalue()
 
 
 def generate_barcode_image_bytes(barcode_data):
@@ -104,7 +134,7 @@ def generate_barcode_image_bytes(barcode_data):
     buffer = io.BytesIO()
     code.write(buffer, options=BARCODE_OPTIONS)
     buffer.seek(0)
-    return buffer.getvalue()
+    return _trim_barcode_png(buffer.getvalue())
 
 
 def create_document_with_barcode(barcode_data, output_path, barcode_image_path=None):
