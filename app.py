@@ -27,6 +27,12 @@ def sanitize_label(name):
     return s[:80]
 
 
+def image_filename_from_barcode(barcode_value):
+    """PNG basename from encoded barcode value (not the Word doc name)."""
+    s = re.sub(r"[^\w\-]", "_", str(barcode_value).strip())[:80]
+    return (s or "barcode") + ".png"
+
+
 def build_one_pair_zip(sanitized_label, barcode_value):
     """Single item: ZIP with one folder containing .docx + .png."""
     barcode_image_bytes = generate_barcode_image_bytes(barcode_value)
@@ -42,9 +48,10 @@ def build_one_pair_zip(sanitized_label, barcode_value):
 
     zip_buffer = io.BytesIO()
     folder = sanitized_label
+    png_name = image_filename_from_barcode(barcode_value)
     with zipfile.ZipFile(zip_buffer, "w", zipfile.ZIP_DEFLATED) as zf:
         zf.writestr(f"{folder}/{folder}.docx", docx_bytes)
-        zf.writestr(f"{folder}/{folder}.png", barcode_image_bytes)
+        zf.writestr(f"{folder}/{png_name}", barcode_image_bytes)
     zip_buffer.seek(0)
     return zip_buffer
 
@@ -67,8 +74,9 @@ def build_multi_zip(pairs):
             finally:
                 os.unlink(tmp_path)
             folder = sanitized_label
+            png_name = image_filename_from_barcode(barcode_value)
             zf.writestr(f"{folder}/{folder}.docx", docx_bytes)
-            zf.writestr(f"{folder}/{folder}.png", barcode_image_bytes)
+            zf.writestr(f"{folder}/{png_name}", barcode_image_bytes)
     zip_buffer.seek(0)
     return zip_buffer
 
@@ -256,7 +264,7 @@ HTML = """
         <div class="icon">📄</div>
         <h1>Word Barcode Generator</h1>
         <p class="sub">Code 128 · A4 · Word + barcode image (ZIP)</p>
-        <p class="hint">Name each set (folder in the ZIP). Add rows for multiple barcodes. Each folder contains matching <code style="color:#94a3b8;">.docx</code> and <code style="color:#94a3b8;">.png</code>.</p>
+        <p class="hint">Name each set (folder in the ZIP). The Word file uses that name; the PNG is named from the barcode value.</p>
       </div>
       <form method="post" action="/generate" id="f">
         <div id="rows"></div>
